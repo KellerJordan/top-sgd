@@ -1,6 +1,7 @@
 # top-sgd
 
 Running `main.py` will regenerate `topsgd.png`.
+![topsgd.png](./topsgd.png)
 
 ```
 $ python main.py
