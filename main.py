@@ -172,6 +172,55 @@ for sd in tqdm(sds):
 obj = {'time': times, 'train_acc': train_accs, 'test_acc': test_accs, 'losses': losses}
 slow_obj = obj
 
+# train using Adam ----
+print('training with Adam...')
+epochs = 9
+lr = 3e-4
+
+model = ResNet18().cuda()
+
+opt = torch.optim.Adam(model.parameters(), lr=lr)
+lr_schedule = np.interp(np.arange(epochs * iters_per_epoch + 1),
+                        [0, 5 * iters_per_epoch, epochs * iters_per_epoch],
+                        [0, 1, 0])
+scheduler = lr_scheduler.LambdaLR(opt, lr_schedule.__getitem__)
+
+losses = []
+save_every = 5
+i = 0
+sds = []
+times = []
+start_time = time.time()
+for ep in tqdm(range(epochs)):
+    for inputs, labels in train_loader:
+        if i % save_every == 0:
+            sds.append({k: v.clone() for k, v in model.state_dict().items()})
+            times.append(time.time() - start_time)
+        i += 1
+        outs = model(inputs)
+        loss = F.cross_entropy(outs, labels)
+        losses.append(loss.item())
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        opt.step()
+        scheduler.step()
+times.append(time.time() - start_time)
+sds.append({k: v.clone() for k, v in model.state_dict().items()})
+
+reset_bn(inputs)
+print('train loss:', sum(losses[-iters_per_epoch:])/iters_per_epoch)
+print('train accuracy:', evaluate(train_loader))
+print('test accuracy:', evaluate(test_loader))
+print('evaluating...')
+train_accs = []
+test_accs = []
+for sd in tqdm(sds):
+    model.load_state_dict(sd)
+    reset_bn(inputs)
+    train_accs.append(evaluate(train_loader))
+    test_accs.append(evaluate(test_loader))
+obj = {'time': times, 'train_acc': train_accs, 'test_acc': test_accs, 'losses': losses}
+slow_obj2 = obj
 
 # train using TopSGD -----
 print('training with TopSGD...')
@@ -236,7 +285,22 @@ fast_obj = obj
 
 print('speedup (topsgd vs sgd):', slow_obj['time'][-1] / fast_obj['time'][-1])
 
-# save figure
+# save figure with just train accuracy
+plt.rcParams.update({'font.size': 15})
+plt.figure(figsize=(7, 4))
+plt.title('ResNet18 on CIFAR-10')
+plt.plot(slow_obj['time'], slow_obj['train_acc'], label='SGD',
+         linewidth=2)
+plt.plot(slow_obj2['time'], slow_obj2['train_acc'], label='Adam',
+         linewidth=2)
+plt.plot(fast_obj['time'], fast_obj['train_acc'], label='TopSGD',
+         linewidth=2)
+plt.xlabel('Time')
+plt.ylabel('Train accuracy')
+plt.ylim(0.1, 1.04)
+plt.legend()
+plt.savefig('./topsgd_train.png', bbox_inches='tight', dpi=150)
+# save figure both train and test accuracy
 plt.rcParams.update({'font.size': 15})
 plt.figure(figsize=(7, 4))
 plt.title('ResNet18 on CIFAR-10')
@@ -244,14 +308,18 @@ plt.plot(slow_obj['time'], slow_obj['train_acc'], label='SGD (train)',
          linewidth=2)
 plt.plot(slow_obj['time'], slow_obj['test_acc'], label='SGD (test)',
          color=colors[0], linestyle='--', linewidth=2)
+plt.plot(slow_obj2['time'], slow_obj2['train_acc'], label='Adam (train)',
+         linewidth=2)
+plt.plot(slow_obj2['time'], slow_obj2['test_acc'], label='Adam (test)',
+         color=colors[1], linestyle='--', linewidth=2)
 plt.plot(fast_obj['time'], fast_obj['train_acc'], label='TopSGD (train)',
          linewidth=2)
 plt.plot(fast_obj['time'], fast_obj['test_acc'], label='TopSGD (test)',
-         color=colors[1], linestyle='--', linewidth=2)
+         color=colors[2], linestyle='--', linewidth=2)
 plt.xlabel('Time')
 plt.ylabel('Accuracy')
 plt.ylim(0.1, 1.04)
 plt.legend()
 plt.savefig('./topsgd.png', bbox_inches='tight', dpi=150)
-print('saved figure')
+print('saved figures')
 
