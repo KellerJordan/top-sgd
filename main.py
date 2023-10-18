@@ -236,7 +236,6 @@ fast_obj = obj
 
 print('speedup (topsgd vs sgd):', slow_obj['time'][-1] / fast_obj['time'][-1])
 
-print('generating figure...')
 # save figure
 plt.rcParams.update({'font.size': 15})
 plt.figure(figsize=(7, 4))
@@ -254,4 +253,5 @@ plt.ylabel('Accuracy')
 plt.ylim(0.1, 1.04)
 plt.legend()
 plt.savefig('./topsgd.png', bbox_inches='tight', dpi=150)
+print('saved figure')
 
