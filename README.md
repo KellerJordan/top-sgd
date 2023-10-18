@@ -21,5 +21,6 @@ train accuracy: 0.99996
 test accuracy: 0.4554
 evaluating...
 100%|████████████████████████████████████████████████████| 64/64 [00:45<00:00,  1.42it/s]
+generating figure...
 ```
 

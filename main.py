@@ -161,6 +161,7 @@ reset_bn(inputs)
 print('train loss:', sum(losses[-iters_per_epoch:])/iters_per_epoch)
 print('train accuracy:', evaluate(train_loader))
 print('test accuracy:', evaluate(test_loader))
+print('evaluating...')
 train_accs = []
 test_accs = []
 for sd in tqdm(sds):
@@ -222,6 +223,7 @@ reset_bn(inputs)
 print('train loss:', sum(losses[-iters_per_epoch:])/iters_per_epoch)
 print('train accuracy:', evaluate(train_loader))
 print('test accuracy:', evaluate(test_loader))
+print('evaluating...')
 train_accs = []
 test_accs = []
 for sd in tqdm(sds):
@@ -234,6 +236,7 @@ fast_obj = obj
 
 print('speedup (topsgd vs sgd):', slow_obj['time'][-1] / fast_obj['time'][-1])
 
+print('generating figure...')
 # save figure
 plt.rcParams.update({'font.size': 15})
 plt.figure(figsize=(7, 4))
