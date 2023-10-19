@@ -293,13 +293,13 @@ plt.plot(slow_obj['time'], slow_obj['train_acc'], label='SGD',
          linewidth=2)
 plt.plot(slow_obj2['time'], slow_obj2['train_acc'], label='Adam',
          linewidth=2)
-plt.plot(fast_obj['time'], fast_obj['train_acc'], label='TopSGD',
+plt.plot(fast_obj['time'], fast_obj['train_acc'], label='"TopSGD"',
          linewidth=2)
 plt.xlabel('Time')
 plt.ylabel('Train accuracy')
 plt.ylim(0.1, 1.04)
 plt.legend()
-plt.savefig('./topsgd_train.png', bbox_inches='tight', dpi=150)
+plt.savefig('./topsgd_train.png', bbox_inches='tight', dpi=100)
 # save figure both train and test accuracy
 plt.rcParams.update({'font.size': 15})
 plt.figure(figsize=(7, 4))
@@ -312,14 +312,14 @@ plt.plot(slow_obj2['time'], slow_obj2['train_acc'], label='Adam (train)',
          linewidth=2)
 plt.plot(slow_obj2['time'], slow_obj2['test_acc'], label='Adam (test)',
          color=colors[1], linestyle='--', linewidth=2)
-plt.plot(fast_obj['time'], fast_obj['train_acc'], label='TopSGD (train)',
+plt.plot(fast_obj['time'], fast_obj['train_acc'], label='"TopSGD" (train)',
          linewidth=2)
-plt.plot(fast_obj['time'], fast_obj['test_acc'], label='TopSGD (test)',
+plt.plot(fast_obj['time'], fast_obj['test_acc'], label='"TopSGD" (test)',
          color=colors[2], linestyle='--', linewidth=2)
 plt.xlabel('Time')
 plt.ylabel('Accuracy')
 plt.ylim(0.1, 1.04)
 plt.legend()
-plt.savefig('./topsgd.png', bbox_inches='tight', dpi=150)
+plt.savefig('./topsgd.png', bbox_inches='tight', dpi=100)
 print('saved figures')
 
