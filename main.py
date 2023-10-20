@@ -94,8 +94,7 @@ def ResNet18():
     )
     return net_seq.to(memory_format=torch.channels_last)
 
-
-def evaluate(loader):
+def evaluate(model, loader):
     model.eval()
     correct = 0
     total = 0
@@ -105,221 +104,203 @@ def evaluate(loader):
             total += len(inputs)
     return correct / total
 
+# no data augmentation
+train_loader = CifarLoader('/tmp', train=True, batch_size=1000)
+test_loader = CifarLoader('/tmp', train=False, batch_size=2000)
+iters_per_epoch = len(train_loader)
+
 # when training for few steps, batchnorm stats don't get updated fast enough.
 # so we manually set bn stats using a batch before evaluating
-def reset_bn(inputs):
+def reset_bn(model):
+    inputs = train_loader.images[:2000].float()
     model.train()
     for m in model.modules():
         if isinstance(m, nn.BatchNorm2d):
             m.momentum = None
             m.reset_running_stats()
     with torch.no_grad():
-        out = model(inputs)
+        model(inputs)
 
-# no augmentations
-train_loader = CifarLoader('/tmp', train=True, batch_size=1000)
-iters_per_epoch = len(train_loader)
-test_loader = CifarLoader('/tmp', train=False, batch_size=2000)
+def train_sgd():
+    epochs = 10
+    lr = 0.15
+
+    model = ResNet18().cuda()
+
+    opt = SGD(model.parameters(), lr=lr, momentum=0.9)
+    lr_schedule = np.interp(np.arange(epochs * iters_per_epoch + 1),
+                            [0, 5 * iters_per_epoch, epochs * iters_per_epoch],
+                            [0, 1, 0])
+    scheduler = lr_scheduler.LambdaLR(opt, lr_schedule.__getitem__)
+
+    losses = []
+    save_every = 5
+    i = 0
+    sds = []
+    times = []
+    start_time = time.time()
+    for ep in tqdm(range(epochs)):
+        for inputs, labels in train_loader:
+            if i % save_every == 0:
+                sds.append({k: v.clone() for k, v in model.state_dict().items()})
+                times.append(time.time() - start_time)
+            i += 1
+            outs = model(inputs)
+            loss = F.cross_entropy(outs, labels)
+            losses.append(loss.item())
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            opt.step()
+            scheduler.step()
+    times.append(time.time() - start_time)
+    sds.append({k: v.clone() for k, v in model.state_dict().items()})
+    return model, times, sds, losses
+
+def train_adam():
+    epochs = 9
+    lr = 3e-4
+
+    model = ResNet18().cuda()
+
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    lr_schedule = np.interp(np.arange(epochs * iters_per_epoch + 1),
+                            [0, 5 * iters_per_epoch, epochs * iters_per_epoch],
+                            [0, 1, 0])
+    scheduler = lr_scheduler.LambdaLR(opt, lr_schedule.__getitem__)
+
+    losses = []
+    save_every = 5
+    i = 0
+    sds = []
+    times = []
+    start_time = time.time()
+    for ep in tqdm(range(epochs)):
+        for inputs, labels in train_loader:
+            if i % save_every == 0:
+                sds.append({k: v.clone() for k, v in model.state_dict().items()})
+                times.append(time.time() - start_time)
+            i += 1
+            outs = model(inputs)
+            loss = F.cross_entropy(outs, labels)
+            losses.append(loss.item())
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            opt.step()
+            scheduler.step()
+    times.append(time.time() - start_time)
+    sds.append({k: v.clone() for k, v in model.state_dict().items()})
+    return model, times, sds, losses
+
+def train_topsgd():
+    epochs = 25
+    lr = 0.03
+
+    model = ResNet18().cuda()
+
+    # cache the backbone features
+    feats = []
+    labels = []
+    with torch.no_grad():
+        for inputs, labels_b in train_loader:
+            feats_b = model[:-3](inputs)
+            feats.append(feats_b)
+            labels.append(labels_b)
+    new_loader = list(zip(feats, labels))
+
+    # optimize just the top two layers
+    opt = SGD(model[-3:].parameters(), lr=lr, momentum=0.9)
+    lr_schedule = np.interp(np.arange(epochs * iters_per_epoch + 1),
+                            [0, 5 * iters_per_epoch, epochs * iters_per_epoch],
+                            [0, 1, 0])
+    scheduler = lr_scheduler.LambdaLR(opt, lr_schedule.__getitem__)
+
+    losses = []
+    save_every = 20
+    i = 0
+    sds = []
+    times = []
+    start_time = time.time()
+    for ep in tqdm(range(epochs)):
+        for feats, labels in new_loader:
+            if i % save_every == 0:
+                sds.append({k: v.clone() for k, v in model.state_dict().items()})
+                times.append(time.time() - start_time)
+            i += 1
+            outs = model[-3:](feats)
+            loss = F.cross_entropy(outs, labels)
+            losses.append(loss.item())
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            opt.step()
+            scheduler.step()
+    times.append(time.time() - start_time)
+    sds.append({k: v.clone() for k, v in model.state_dict().items()})
+    reset_bn(model)
+    return model, times, sds, losses
+
+def get_metrics(model, times, sds, losses):
+    print('train loss:', sum(losses[-iters_per_epoch:])/iters_per_epoch)
+    print('train accuracy:', evaluate(model, train_loader))
+    print('test accuracy:', evaluate(model, test_loader))
+    print('evaluating...')
+    train_accs = []
+    test_accs = []
+    for sd in tqdm(sds):
+        model.load_state_dict(sd)
+        reset_bn(model)
+        train_accs.append(evaluate(model, train_loader))
+        test_accs.append(evaluate(model, test_loader))
+    obj = {'time': times, 'train_acc': train_accs, 'test_acc': test_accs, 'losses': losses}
+    return obj
+
+def save_figures(slow_obj, slow2_obj, fast_obj):
+    # save figure with just train accuracy
+    plt.rcParams.update({'font.size': 15})
+    plt.figure(figsize=(7, 4))
+    plt.title('ResNet18 on CIFAR-10')
+    plt.plot(slow_obj['time'], slow_obj['train_acc'], label='SGD',
+             linewidth=2)
+    plt.plot(slow_obj2['time'], slow_obj2['train_acc'], label='Adam',
+             linewidth=2)
+    plt.plot(fast_obj['time'], fast_obj['train_acc'], label='"TopSGD"',
+             linewidth=2)
+    plt.xlabel('Time')
+    plt.ylabel('Train accuracy')
+    plt.ylim(0.1, 1.04)
+    plt.legend()
+    plt.savefig('./topsgd_train.png', bbox_inches='tight', dpi=100)
+
+    # save figure both train and test accuracy
+    plt.rcParams.update({'font.size': 15})
+    plt.figure(figsize=(7, 4))
+    plt.title('ResNet18 on CIFAR-10')
+    plt.plot(slow_obj['time'], slow_obj['train_acc'], label='SGD (train)',
+             linewidth=2)
+    plt.plot(slow_obj['time'], slow_obj['test_acc'], label='SGD (test)',
+             color=colors[0], linestyle='--', linewidth=2)
+    plt.plot(slow_obj2['time'], slow_obj2['train_acc'], label='Adam (train)',
+             linewidth=2)
+    plt.plot(slow_obj2['time'], slow_obj2['test_acc'], label='Adam (test)',
+             color=colors[1], linestyle='--', linewidth=2)
+    plt.plot(fast_obj['time'], fast_obj['train_acc'], label='TopSGD (train)',
+             linewidth=2)
+    plt.plot(fast_obj['time'], fast_obj['test_acc'], label='TopSGD (test)',
+             color=colors[2], linestyle='--', linewidth=2)
+    plt.xlabel('Time')
+    plt.ylabel('Accuracy')
+    plt.ylim(0.1, 1.04)
+    plt.legend()
+    plt.savefig('./topsgd.png', bbox_inches='tight', dpi=100)
 
 
-# train using SGD ----
-print('training with SGD...')
-epochs = 10
-lr = 0.15
-
-model = ResNet18().cuda()
-
-opt = SGD(model.parameters(), lr=lr, momentum=0.9)
-lr_schedule = np.interp(np.arange(epochs * iters_per_epoch + 1),
-                        [0, 5 * iters_per_epoch, epochs * iters_per_epoch],
-                        [0, 1, 0])
-scheduler = lr_scheduler.LambdaLR(opt, lr_schedule.__getitem__)
-
-losses = []
-save_every = 5
-i = 0
-sds = []
-times = []
-start_time = time.time()
-for ep in tqdm(range(epochs)):
-    for inputs, labels in train_loader:
-        if i % save_every == 0:
-            sds.append({k: v.clone() for k, v in model.state_dict().items()})
-            times.append(time.time() - start_time)
-        i += 1
-        outs = model(inputs)
-        loss = F.cross_entropy(outs, labels)
-        losses.append(loss.item())
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
-        opt.step()
-        scheduler.step()
-times.append(time.time() - start_time)
-sds.append({k: v.clone() for k, v in model.state_dict().items()})
-
-reset_bn(inputs)
-print('train loss:', sum(losses[-iters_per_epoch:])/iters_per_epoch)
-print('train accuracy:', evaluate(train_loader))
-print('test accuracy:', evaluate(test_loader))
-print('evaluating...')
-train_accs = []
-test_accs = []
-for sd in tqdm(sds):
-    model.load_state_dict(sd)
-    reset_bn(inputs)
-    train_accs.append(evaluate(train_loader))
-    test_accs.append(evaluate(test_loader))
-obj = {'time': times, 'train_acc': train_accs, 'test_acc': test_accs, 'losses': losses}
-slow_obj = obj
-
-# train using Adam ----
-print('training with Adam...')
-epochs = 9
-lr = 3e-4
-
-model = ResNet18().cuda()
-
-opt = torch.optim.Adam(model.parameters(), lr=lr)
-lr_schedule = np.interp(np.arange(epochs * iters_per_epoch + 1),
-                        [0, 5 * iters_per_epoch, epochs * iters_per_epoch],
-                        [0, 1, 0])
-scheduler = lr_scheduler.LambdaLR(opt, lr_schedule.__getitem__)
-
-losses = []
-save_every = 5
-i = 0
-sds = []
-times = []
-start_time = time.time()
-for ep in tqdm(range(epochs)):
-    for inputs, labels in train_loader:
-        if i % save_every == 0:
-            sds.append({k: v.clone() for k, v in model.state_dict().items()})
-            times.append(time.time() - start_time)
-        i += 1
-        outs = model(inputs)
-        loss = F.cross_entropy(outs, labels)
-        losses.append(loss.item())
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
-        opt.step()
-        scheduler.step()
-times.append(time.time() - start_time)
-sds.append({k: v.clone() for k, v in model.state_dict().items()})
-
-reset_bn(inputs)
-print('train loss:', sum(losses[-iters_per_epoch:])/iters_per_epoch)
-print('train accuracy:', evaluate(train_loader))
-print('test accuracy:', evaluate(test_loader))
-print('evaluating...')
-train_accs = []
-test_accs = []
-for sd in tqdm(sds):
-    model.load_state_dict(sd)
-    reset_bn(inputs)
-    train_accs.append(evaluate(train_loader))
-    test_accs.append(evaluate(test_loader))
-obj = {'time': times, 'train_acc': train_accs, 'test_acc': test_accs, 'losses': losses}
-slow_obj2 = obj
-
-# train using TopSGD -----
-print('training with TopSGD...')
-epochs = 25
-lr = 0.03
-
-model = ResNet18().cuda()
-
-# cache the backbone features
-feats = []
-labels = []
-with torch.no_grad():
-    for inputs, labels_b in train_loader:
-        feats_b = model[:-3](inputs)
-        feats.append(feats_b)
-        labels.append(labels_b)
-new_loader = list(zip(feats, labels))
-
-# optimize just the top two layers
-opt = SGD(model[-3:].parameters(), lr=lr, momentum=0.9)
-lr_schedule = np.interp(np.arange(epochs * iters_per_epoch + 1),
-                        [0, 5 * iters_per_epoch, epochs * iters_per_epoch],
-                        [0, 1, 0])
-scheduler = lr_scheduler.LambdaLR(opt, lr_schedule.__getitem__)
-
-losses = []
-save_every = 20
-i = 0
-sds = []
-times = []
-start_time = time.time()
-for ep in tqdm(range(epochs)):
-    for feats, labels in new_loader:
-        if i % save_every == 0:
-            sds.append({k: v.clone() for k, v in model.state_dict().items()})
-            times.append(time.time() - start_time)
-        i += 1
-        outs = model[-3:](feats)
-        loss = F.cross_entropy(outs, labels)
-        losses.append(loss.item())
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
-        opt.step()
-        scheduler.step()
-times.append(time.time() - start_time)
-sds.append({k: v.clone() for k, v in model.state_dict().items()})
-
-reset_bn(inputs)
-print('train loss:', sum(losses[-iters_per_epoch:])/iters_per_epoch)
-print('train accuracy:', evaluate(train_loader))
-print('test accuracy:', evaluate(test_loader))
-print('evaluating...')
-train_accs = []
-test_accs = []
-for sd in tqdm(sds):
-    model.load_state_dict(sd)
-    reset_bn(inputs)
-    train_accs.append(evaluate(train_loader))
-    test_accs.append(evaluate(test_loader))
-obj = {'time': times, 'train_acc': train_accs, 'test_acc': test_accs, 'losses': losses}
-fast_obj = obj
-
-print('speedup (topsgd vs sgd):', slow_obj['time'][-1] / fast_obj['time'][-1])
-
-# save figure with just train accuracy
-plt.rcParams.update({'font.size': 15})
-plt.figure(figsize=(7, 4))
-plt.title('ResNet18 on CIFAR-10')
-plt.plot(slow_obj['time'], slow_obj['train_acc'], label='SGD',
-         linewidth=2)
-plt.plot(slow_obj2['time'], slow_obj2['train_acc'], label='Adam',
-         linewidth=2)
-plt.plot(fast_obj['time'], fast_obj['train_acc'], label='"TopSGD"',
-         linewidth=2)
-plt.xlabel('Time')
-plt.ylabel('Train accuracy')
-plt.ylim(0.1, 1.04)
-plt.legend()
-plt.savefig('./topsgd_train.png', bbox_inches='tight', dpi=100)
-# save figure both train and test accuracy
-plt.rcParams.update({'font.size': 15})
-plt.figure(figsize=(7, 4))
-plt.title('ResNet18 on CIFAR-10')
-plt.plot(slow_obj['time'], slow_obj['train_acc'], label='SGD (train)',
-         linewidth=2)
-plt.plot(slow_obj['time'], slow_obj['test_acc'], label='SGD (test)',
-         color=colors[0], linestyle='--', linewidth=2)
-plt.plot(slow_obj2['time'], slow_obj2['train_acc'], label='Adam (train)',
-         linewidth=2)
-plt.plot(slow_obj2['time'], slow_obj2['test_acc'], label='Adam (test)',
-         color=colors[1], linestyle='--', linewidth=2)
-plt.plot(fast_obj['time'], fast_obj['train_acc'], label='"TopSGD" (train)',
-         linewidth=2)
-plt.plot(fast_obj['time'], fast_obj['test_acc'], label='"TopSGD" (test)',
-         color=colors[2], linestyle='--', linewidth=2)
-plt.xlabel('Time')
-plt.ylabel('Accuracy')
-plt.ylim(0.1, 1.04)
-plt.legend()
-plt.savefig('./topsgd.png', bbox_inches='tight', dpi=100)
-print('saved figures')
+if __name__ == '__main__':
+    print('training with SGD...')
+    slow_obj = get_metrics(*train_sgd())
+    print('training with Adam...')
+    slow_obj2 = get_metrics(*train_adam())
+    print('training with TopSGD...')
+    fast_obj = get_metrics(*train_topsgd())
+    print('speedup (topsgd vs sgd):', slow_obj['time'][-1] / fast_obj['time'][-1])
+    save_figures(slow_obj, slow_obj2, fast_obj)
+    print('saved figures')
 
