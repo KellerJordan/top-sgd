@@ -1,5 +1,7 @@
 # top-sgd
 
+Thread: https://twitter.com/kellerjordan0/status/1715048419440619870
+
 Running `main.py` will regenerate `topsgd.png`.
 ![topsgd.png](./topsgd.png)
 
